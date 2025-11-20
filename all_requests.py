@@ -26,9 +26,9 @@ async def get_bf6_stats(name: str, platform: str = "pc") -> dict:
                 response.raise_for_status()
             return data
 
-async def get_bf_ban(name: str, platform: str = "pc") -> dict:
-    base_url = 'https://api.gametools.network/bfglobal/ban/'
-    url = f"{base_url}?name={name}&platform={platform}"
+async def get_bf_ban(name: str) -> dict:
+    base_url = 'https://api.gametools.network/bfban/checkban/'
+    url = f"{base_url}?names={name}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             data = await response.json()
@@ -38,4 +38,8 @@ async def get_bf_ban(name: str, platform: str = "pc") -> dict:
 
 
 if __name__ == "__main__":
-    pass
+    import asyncio
+    data = asyncio.run(get_bf_ban("yuanzui814"))
+    print(data)
+    isbaned = data.get("names", {}).get("yuanzui814", "{}").get("hacker", False)
+    print(type(isbaned), isbaned)

@@ -1,8 +1,9 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from .all_requests import get_bf6_stats
+from .all_requests import get_bf6_stats, get_bf_ban
 from aiohttp import ClientResponseError
+import asyncio
 
 class MyPlugin(Star):
     def __init__(self, context: Context):
@@ -17,9 +18,14 @@ class MyPlugin(Star):
     async def check_game_record(self, event: AstrMessageEvent, ea_name: str, platform: str = "pc"):
         """<平台命令前缀>查战绩 ea_name [游戏平台]"""
         data = {}
+        ban = {}
 
         try:
-            data = await get_bf6_stats(ea_name, platform)
+            stat_task = asyncio.create_task(get_bf6_stats(ea_name, platform))
+            ban_task = asyncio.create_task(get_bf_ban(ea_name))
+            
+            data = await stat_task
+            ban = await ban_task
         except ClientResponseError as e:
             if e.status == 404:
                 logger.info(f"接收到{e.status}状态码，未找到{platform}平台，EA名称为{ea_name}的战绩信息。")
@@ -34,34 +40,44 @@ class MyPlugin(Star):
             yield event.plain_result("发生未知错误")
             return
         
+        # 封禁信息
+        isbaned = ban.get("names", {}).get(ea_name, "{}").get("hacker", False)
         # 处理并格式化战绩数据
         bf6_stats = data
         # 真人和AI合并统计
         user_name = bf6_stats.get("userName", "N/A")
-        kills = bf6_stats.get("kills", "0") # 总击杀数，包括真人和AI
-        deaths = bf6_stats.get("deaths", "0") # 总死亡数
-        kills_per_minute = bf6_stats.get("killsPerMinute", "0") # 每分钟击杀数
-        match_wins = bf6_stats.get("wins", "0") # 胜场数
-        match_losses = bf6_stats.get("loses", "0") # 败场数
-        time_played = int(self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00")).total_seconds() / 60) # 游戏时间，转换为timedelta对象再转化为分钟
+        kills = bf6_stats.get("kills", "0") 
+        deaths = bf6_stats.get("deaths", "0") 
+        kills_per_minute = bf6_stats.get("killsPerMinute", "0") 
+        match_wins = bf6_stats.get("wins", "0") 
+        match_losses = bf6_stats.get("loses", "0")
+        # 游戏时间，转换为timedelta对象再转换
+        time_played = self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00")).total_seconds()
+        time_played_hour = self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00")).total_seconds() / 3600 if time_played > 0 else 0
         
         # 分开统计
-        human_kd = bf6_stats.get("infantryKillDeath", "0") # 真人KD
-        human_kills_float = (int(kills) * float(bf6_stats.get("humanPrecentage", "0")) / 100)
-        human_kills = int(human_kills_float)  # 真人击杀数
-        
+        human_kd = bf6_stats.get("infantryKillDeath", "0")
+        human_kills = int((int(kills) * float(bf6_stats.get("humanPrecentage", "0")) / 100)) if time_played else 0 # 容错
+        human_kills_per_minute = float(human_kills) / (time_played / 60) if time_played > 0 else 0
+
+        win_rate = float(match_wins) / (float(match_wins) + float(match_losses)) * 100 if (float(match_wins) + float(match_losses)) > 0 else "0.00"
+        ai_percentage = 100 - float(bf6_stats.get("humanPrecentage", "0"))
+
         yield event.plain_result(
 f"""
 战地6 战绩查询结果：
 玩家名称：{user_name}
+封禁状态：{"已封禁" if isbaned else "未封禁"}
 总击杀数（含AI）：{kills}
 总死亡数：{deaths}
-每分钟击杀数（含AI）：{kills_per_minute}
+真人击杀数：{human_kills}
+AI率：{ai_percentage:.2f}%
+真人KD：{human_kd}
+真人每分钟击杀数：{human_kills_per_minute:.2f}
 胜场数：{match_wins}
 败场数：{match_losses}
-游戏时间（分钟）：{time_played}
-真人击杀数：{human_kills}
-真人KD：{human_kd}
+胜率：{win_rate:.2f}%
+游戏时间（小时）：{time_played_hour:.1f}
 """)
         event.stop_event()
         
