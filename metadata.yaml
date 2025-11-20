@@ -1,0 +1,6 @@
+name: astrbot_plugin_bf6_tracker # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
+display_name: BF6 战绩查询 # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
+desc: 调用社区公开接口查询战地6战绩，命令格式“<平台命令前缀>查战绩 ea_name [游戏平台]” 。默认为pc。 # 插件简短描述
+version: v0.0.1 # 插件版本号。格式：v1.1.1 或者 v1.1
+author: Procyon-3 # 作者
+repo: https://github.com/Procyon-3/astrbot_plugin_bf6_tracker # 插件的仓库地址
