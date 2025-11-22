@@ -17,15 +17,14 @@ class MyPlugin(Star):
     @filter.command("查战绩")
     async def check_game_record(self, event: AstrMessageEvent, ea_name: str, platform: str = "pc"):
         """<平台命令前缀>查战绩 ea_name [游戏平台]"""
-        data = {}
+        bf6_stats = {}
         ban = {}
 
         try:
-            stat_task = asyncio.create_task(get_bf6_stats(ea_name, platform))
-            ban_task = asyncio.create_task(get_bf_ban(ea_name))
-            
-            data = await stat_task
-            ban = await ban_task
+            bf6_stats, ban = await asyncio.gather(
+                get_bf6_stats(ea_name, platform),
+                get_bf_ban(ea_name),
+            )
         except ClientResponseError as e:
             if e.status == 404:
                 logger.info(f"接收到{e.status}状态码，未找到{platform}平台，EA名称为{ea_name}的战绩信息。")
@@ -40,44 +39,67 @@ class MyPlugin(Star):
             yield event.plain_result("发生未知错误")
             return
         
-        # 封禁信息
-        isbaned = ban.get("names", {}).get(ea_name, "{}").get("hacker", False)
-        # 处理并格式化战绩数据
-        bf6_stats = data
-        # 真人和AI合并统计
-        user_name = bf6_stats.get("userName", "N/A")
-        kills = bf6_stats.get("kills", "0") 
-        deaths = bf6_stats.get("deaths", "0") 
-        kills_per_minute = bf6_stats.get("killsPerMinute", "0") 
-        match_wins = bf6_stats.get("wins", "0") 
-        match_losses = bf6_stats.get("loses", "0")
-        # 游戏时间，转换为timedelta对象再转换
-        time_played = self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00")).total_seconds()
-        time_played_hour = self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00")).total_seconds() / 3600 if time_played > 0 else 0
-        
-        # 分开统计
-        human_kd = bf6_stats.get("infantryKillDeath", "0")
-        human_kills = int((int(kills) * float(bf6_stats.get("humanPrecentage", "0")) / 100)) if time_played else 0 # 容错
-        human_kills_per_minute = float(human_kills) / (time_played / 60) if time_played > 0 else 0
+        def _safe_int(value, default=0):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return default
 
-        win_rate = float(match_wins) / (float(match_wins) + float(match_losses)) * 100 if (float(match_wins) + float(match_losses)) > 0 else "0.00"
-        ai_percentage = 100 - float(bf6_stats.get("humanPrecentage", "0"))
+        def _safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
 
+        # 提取数据
+        time_played_delta = self._parse_game_time(bf6_stats.get("timePlayed", "0 days, 0:00:00"))
+        time_played_seconds = time_played_delta.total_seconds()
+        time_played_hours = time_played_seconds / 3600 if time_played_seconds else 0
+
+        kills = _safe_int(bf6_stats.get("kills"))
+        deaths = _safe_int(bf6_stats.get("deaths"))
+        human_percentage = _safe_float(bf6_stats.get("humanPrecentage"))
+        match_wins = _safe_int(bf6_stats.get("wins"))
+        match_losses = _safe_int(bf6_stats.get("loses"))
+        total_matches = match_wins + match_losses
+
+        # 真人击杀数 = 总击杀数 * 真人比例
+        human_kills = int(kills * human_percentage / 100) if time_played_seconds else 0
+        human_kills_per_minute = (human_kills / (time_played_seconds / 60)) if time_played_seconds else 0.0
+        win_rate = (match_wins / total_matches * 100) if total_matches else 0.0
+        ai_percentage = max(0.0, 100.0 - human_percentage)
+
+        result = {
+            "isbaned": ban.get("names", {}).get(ea_name, {}).get("hacker", False),
+            "user_name": bf6_stats.get("userName", "N/A"),
+            "kills": kills,
+            "deaths": deaths,
+            "kills_per_minute": _safe_float(bf6_stats.get("killsPerMinute")),
+            "match_wins": match_wins,
+            "match_losses": match_losses,
+            "time_played": time_played_seconds,
+            "time_played_hour": time_played_hours,
+            "human_kd": bf6_stats.get("infantryKillDeath", "0"),
+            "human_kills": human_kills,
+            "human_kills_per_minute": human_kills_per_minute,
+            "win_rate": win_rate,
+            "ai_percentage": ai_percentage,
+        }
         yield event.plain_result(
 f"""
 战地6 战绩查询结果：
-玩家名称：{user_name}
-封禁状态：{"已封禁" if isbaned else "未封禁"}
-总击杀数（含AI）：{kills}
-总死亡数：{deaths}
-真人击杀数：{human_kills}
-AI率：{ai_percentage:.2f}%
-真人KD：{human_kd}
-真人每分钟击杀数：{human_kills_per_minute:.2f}
-胜场数：{match_wins}
-败场数：{match_losses}
-胜率：{win_rate:.2f}%
-游戏时间（小时）：{time_played_hour:.1f}
+玩家名称：{result.get("user_name", "N/A")}
+封禁状态：{"已封禁" if result.get("isbaned", False) else "未封禁"}
+总击杀数（含AI）：{result.get("kills", "0")}
+总死亡数：{result.get("deaths", "0")}
+真人击杀数：{result.get("human_kills", "0")}
+AI率：{result.get("ai_percentage", 0):.2f}%
+真人KD：{result.get("human_kd", "0")}
+真人KPM：{result.get("human_kills_per_minute", 0):.2f}
+胜场数：{result.get("match_wins", "0")}
+败场数：{result.get("match_losses", "0")}
+胜率：{result.get("win_rate", 0.0):.2f}%
+游戏时间（小时）：{result.get("time_played_hour", 0):.1f}
 """)
         event.stop_event()
         
@@ -88,7 +110,7 @@ AI率：{ai_percentage:.2f}%
         pass
 
     # 处理返回的游戏时间字符串，转换为timedelta对象
-    def _parse_game_time(self,time_str):
+    def _parse_game_time(self, time_str):
         from datetime import timedelta
         import re
         if not time_str:
@@ -114,10 +136,18 @@ AI率：{ai_percentage:.2f}%
         # time_part 是 "9:38:11" 或 " 9:38:11"
         time_part = time_part.strip()
         h_m_s = time_part.split(':')
-    
-        hours = int(h_m_s[0])
-        minutes = int(h_m_s[1])
-        seconds = int(h_m_s[2])
+
+        if len(h_m_s) < 3:
+            h_m_s += ["0"] * (3 - len(h_m_s))
+        elif len(h_m_s) > 3:
+            h_m_s = h_m_s[:3]
+
+        try:
+            hours = int(h_m_s[0])
+            minutes = int(h_m_s[1])
+            seconds = int(h_m_s[2])
+        except ValueError:
+            return timedelta(0)
     
         # 2. 构建 timedelta 对象
         duration = timedelta(
